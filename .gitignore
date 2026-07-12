@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller build output
+build/
+dist/
+*.manifest
+
+# Internal design notes (not for the public repo)
+docs/superpowers/
+
+# Claude Code project config
+.claude/
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/
