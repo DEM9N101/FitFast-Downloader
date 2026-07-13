@@ -10,6 +10,9 @@ build/
 dist/
 *.manifest
 
+# Installer compiler output
+installer_out/
+
 # Internal design notes (not for the public repo)
 docs/superpowers/
 

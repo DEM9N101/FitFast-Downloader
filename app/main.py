@@ -20,6 +20,7 @@ if __package__ in (None, ""):
     )
     from app.scraper import scrape_fitgirl_page, game_title_from_links, ScrapeError, is_fitgirl_url
     from app.extractor import extract_all, find_unrar
+    from app.log import setup_logging, get_logger, log_exception
     from app.ui import MainWindow, format_bytes, format_speed, format_eta
 else:
     from . import config as config_mod
@@ -30,6 +31,7 @@ else:
     )
     from .scraper import scrape_fitgirl_page, game_title_from_links, ScrapeError, is_fitgirl_url
     from .extractor import extract_all, find_unrar
+    from .log import setup_logging, get_logger, log_exception
     from .ui import MainWindow, format_bytes, format_speed, format_eta
 
 
@@ -157,7 +159,24 @@ class App:
         self._fetch_thread: threading.Thread | None = None
         self._extract_thread: threading.Thread | None = None
 
+    def _tk_exception(self, exc_type, exc_value, exc_tb) -> None:
+        """Catch-all for exceptions raised inside Tk callbacks."""
+        tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        get_logger().error("Unhandled UI error:\n%s", tb)
+        try:
+            self.window.show_error_report(
+                "using the app",
+                "FitFast hit an unexpected error. It has been written to the log. "
+                "You can keep using the app, but if this happens again please report it.",
+                tb,
+            )
+        except Exception:
+            pass
+
     def run(self) -> None:
+        setup_logging()
+        # Route every uncaught Tk-callback error into our friendly dialog + log.
+        self.window.root.report_callback_exception = self._tk_exception
         # First-time setup: fetch the Camoufox browser if it isn't installed yet.
         try:
             from app.bootstrap import browser_ready, ensure_browser
@@ -205,30 +224,43 @@ class App:
         self._fetch_thread.start()
 
     def _fetch_worker(self, url: str) -> None:
+        get_logger().info("Fetching FitGirl page: %s", url)
         try:
             result = scrape_fitgirl_page(url)
         except ScrapeError as e:
-            self._schedule_ui(lambda: self._fetch_done(None, None, str(e)))
+            self._schedule_ui(lambda: self._fetch_done(None, None, str(e), ""))
             return
         except Exception as e:
-            self._schedule_ui(lambda: self._fetch_done(None, None, f"Unexpected error: {e}"))
+            tb = log_exception("fetching FitGirl page", e)
+            self._schedule_ui(lambda: self._fetch_done(None, None, str(e), tb))
             return
         # Prefer the clean game name from filenames, fall back to page title.
         subfolder = game_title_from_links(result.links) or result.title or ""
-        self._schedule_ui(lambda: self._fetch_done(result.links, subfolder, None))
+        get_logger().info("Fetched %d links (%s)", len(result.links), subfolder or "no title")
+        self._schedule_ui(lambda: self._fetch_done(result.links, subfolder, None, ""))
 
-    def _fetch_done(self, links, subfolder, error) -> None:
+    def _fetch_done(self, links, subfolder, error, details="") -> None:
         self.window.set_fetch_state(False)
         if error:
             self.window.set_status_bar("Fetch failed.")
-            messagebox.showerror("Couldn't fetch links", error)
+            self.window.show_toast("Couldn't fetch links from that page", "error")
+            self.window.show_error_report(
+                "fetching links from a FitGirl page",
+                "FitFast couldn't get the download links from that page. "
+                + error
+                + "\n\nMake sure the address is a FitGirl game page (not the homepage or an "
+                "'upcoming' post), and that you are connected to the internet.",
+                details,
+            )
             return
         self.window.set_links_text("\n".join(links))
         if subfolder:
             self.window.set_subfolder(subfolder)
+        name = f" for {subfolder}" if subfolder else ""
         self.window.set_status_bar(
             f"Fetched {len(links)} link(s). Review, pick a folder, then Start Downloads."
         )
+        self.window.show_toast(f"Fetched {len(links)} links{name}. Ready to download.", "success")
 
     def _on_start(self) -> None:
         if self.running:
@@ -307,9 +339,17 @@ class App:
             )
             self.downloader.start()
         except (Aria2NotFound, Aria2RpcError) as e:
-            messagebox.showerror("Cannot start aria2c", str(e))
+            tb = log_exception("starting the download engine", e)
+            self.window.show_error_report(
+                "starting the download engine",
+                "FitFast couldn't start its download engine (aria2c). This usually means "
+                "an antivirus blocked it or the app files are incomplete. Try reinstalling, "
+                "and add an antivirus exception for FitFast if needed.",
+                tb,
+            )
             self.downloader = None
             return
+        get_logger().info("Starting %d download(s) into %s", len(self.jobs), self.dest_folder)
 
         self.resolver = Resolver()
         self.shutdown_event.clear()
@@ -342,7 +382,7 @@ class App:
         if skipped:
             self.window.set_status_bar(
                 self.window.status_bar.cget("text")
-                + f" — skipped {skipped} invalid line(s)"
+                + f" (skipped {skipped} invalid line(s))"
             )
 
     def _resolver_loop(self) -> None:
@@ -564,7 +604,7 @@ class App:
         row = self.window.rows.get(str(id(job)))
         if row is not None:
             row.set_status(
-                f"Slow ({format_speed(avg_bps)}) → swapping edge...",
+                f"Slow ({format_speed(avg_bps)}), swapping to a faster server...",
                 "#ffa726",
             )
         self.reresolve_queue.put(job)
@@ -577,6 +617,7 @@ class App:
             summary += f", {error_count} failed"
         summary += f". Saved to {self.dest_folder}"
         self.window.set_status_bar(summary)
+        get_logger().info("Batch finished: %d ok, %d failed", done_count, error_count)
         # Cleanup workers
         try:
             self.shutdown_event.set()
@@ -589,13 +630,29 @@ class App:
         except Exception:
             pass
 
-        # Auto-extract the downloaded archives, if enabled and anything succeeded.
-        if (
+        will_extract = (
             extract_ok
             and done_count > 0
             and self.dest_folder is not None
             and self.window.get_auto_extract()
-        ):
+            and find_unrar() is not None
+        )
+        if extract_ok and done_count > 0:
+            if error_count == 0:
+                self.window.show_toast(
+                    f"All {done_count} files downloaded"
+                    + (". Unzipping now…" if will_extract else "."),
+                    "success",
+                )
+            else:
+                self.window.show_toast(
+                    f"{done_count} downloaded, {error_count} failed. "
+                    "Re-run to retry the failed ones.",
+                    "info", 6000,
+                )
+
+        # Auto-extract the downloaded archives, if enabled and anything succeeded.
+        if will_extract:
             self._start_extraction()
 
     def _start_extraction(self) -> None:
@@ -603,7 +660,7 @@ class App:
             return
         if find_unrar() is None:
             self.window.set_status_bar(
-                "Downloads done. Skipping extraction — no UnRAR/WinRAR found."
+                "Downloads done. Skipping extraction: no UnRAR/WinRAR found."
             )
             return
         folder = self.dest_folder
@@ -637,6 +694,8 @@ class App:
                     f"Extract failed for {name}: {err}"
                 ))
 
+        toast_kind = "success"
+        toast_msg = ""
         try:
             ok, fail = extract_all(
                 folder, delete_after=delete_after,
@@ -646,12 +705,23 @@ class App:
             if fail:
                 msg += f", {fail} failed"
             msg += f". Ready in {folder}"
+            get_logger().info("Extraction: %d ok, %d failed", ok, fail)
+            if fail:
+                toast_kind = "info"
+                toast_msg = f"Unzipped {ok} set(s), {fail} failed. Your files are in the game folder."
+            else:
+                toast_msg = "Done. Game unzipped and ready to install."
         except Exception as e:
+            log_exception("extracting archives", e)
             msg = f"Extraction error: {e}"
+            toast_kind = "error"
+            toast_msg = "Downloads finished, but unzipping failed. You can unzip the .rar files by hand."
 
         def finish():
             self.window.set_downloading_state(False)
             self.window.set_status_bar(msg)
+            if toast_msg:
+                self.window.show_toast(toast_msg, toast_kind, 6000)
 
         self._schedule_ui(finish)
 
@@ -674,7 +744,7 @@ class App:
             return
         if not messagebox.askyesno(
             "Cancel downloads?",
-            "Stop all downloads? Partial files will be kept — you can resume later "
+            "Stop all downloads? Partial files will be kept, so you can resume later "
             "by pasting the same links back.",
         ):
             return
@@ -779,7 +849,7 @@ class App:
                 messagebox.showerror("Speed test failed", error)
                 return
             msg = (
-                f"Cloudflare speed test — peak {format_speed(peak_bps)}"
+                f"Cloudflare speed test: peak {format_speed(peak_bps)}"
                 f", avg over test {format_speed(avg_bps)}."
             )
             self.window.set_status_bar(msg)
@@ -831,12 +901,26 @@ class App:
 
 def main() -> int:
     try:
+        setup_logging()
+    except Exception:
+        pass
+    try:
         App().run()
         return 0
     except Exception as e:
+        try:
+            tb = log_exception("app startup", e)
+        except Exception:
+            tb = traceback.format_exc()
         traceback.print_exc()
         try:
-            messagebox.showerror("Fatal error", str(e))
+            from tkinter import Tk
+            from app.config import LOG_FILE
+            messagebox.showerror(
+                "FitFast could not start",
+                f"{e}\n\nDetails were written to:\n{LOG_FILE}\n\n"
+                "Please report this at the project's GitHub issues page and attach that file.",
+            )
         except Exception:
             pass
         return 1

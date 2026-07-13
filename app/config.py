@@ -4,8 +4,16 @@ import json
 import os
 from pathlib import Path
 
+APP_VERSION = "1.1.0"
+GITHUB_REPO = "DEM9N101/FitFast-Downloader"
+REPO_URL = f"https://github.com/{GITHUB_REPO}"
+ISSUES_URL = f"{REPO_URL}/issues/new"
+RELEASES_URL = f"{REPO_URL}/releases/latest"
+
 APP_DIR = Path(os.environ.get("APPDATA", str(Path.home() / ".config"))) / "FitFast"
 CONFIG_FILE = APP_DIR / "config.json"
+LOG_DIR = APP_DIR / "logs"
+LOG_FILE = LOG_DIR / "fitfast.log"
 
 DEFAULTS: dict = {
     "destination": str(Path.home() / "Downloads"),
