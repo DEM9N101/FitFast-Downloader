@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FitFast Downloader — free FitGirl repack downloader that bypasses the fuckingfast.co Cloudflare block</title>
+<meta name="description" content="Free open-source Windows tool that downloads FitGirl repacks from fuckingfast.co, past the Cloudflare block that breaks JDownloader 2. Paste one FitGirl page, get every part downloaded and unpacked automatically.">
+<meta name="keywords" content="FitGirl downloader, FitGirl repack downloader, fuckingfast downloader, fuckingfast.co downloader, JDownloader alternative, Cloudflare bypass downloader, blocked by cloudflare fitgirl, blocked by cloudflare fuckingfast, jdownloader2 blocked cloudflare fix, fitgirl repack download manager, download fitgirl repacks fast, batch download fuckingfast, aria2 game downloader, fitgirl link extractor, open source fitgirl downloader, free fitgirl downloader, download blocked by cloudflare site pro, jdownloader cloudflare blocked, jdownloader2 cloudflare error, cloudflare site pro fitgirl, cloudflare site protection jdownloader">
+<meta name="robots" content="index,follow">
+<link rel="canonical" href="https://dem9n101.github.io/FitFast-Downloader/">
+<meta property="og:title" content="FitFast Downloader — free FitGirl repack downloader (fixes the Cloudflare block)">
+<meta property="og:description" content="Free open-source Windows tool. Paste a FitGirl page, get every fuckingfast.co part downloaded and unpacked. Bypasses the Cloudflare block that broke JDownloader 2.">
+<meta property="og:image" content="https://raw.githubusercontent.com/DEM9N101/FitFast-Downloader/main/docs/img/main.png">
+<meta property="og:url" content="https://dem9n101.github.io/FitFast-Downloader/">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+:root {
+  --bg:#0f1114; --fg:#eef1f5; --muted:#a2acb8; --card:#171a20; --border:#242832;
+  --accent:#3ea7ff; --accent-2:#66d19e; --shadow:0 8px 32px rgba(0,0,0,.35);
+}
+* { box-sizing:border-box; }
+html,body { margin:0; padding:0; background:var(--bg); color:var(--fg); font:16px/1.6 -apple-system,Segoe UI,Roboto,Ubuntu,sans-serif; }
+a { color:var(--accent); text-decoration:none; }
+a:hover { text-decoration:underline; }
+.wrap { max-width:960px; margin:0 auto; padding:32px 20px; }
+header { text-align:center; padding:48px 0 24px; }
+h1 { font-size:44px; line-height:1.15; margin:0 0 12px; letter-spacing:-.02em; }
+.tag { color:var(--muted); font-size:19px; max-width:640px; margin:0 auto 28px; }
+.cta { display:inline-flex; gap:12px; flex-wrap:wrap; justify-content:center; }
+.btn { display:inline-block; padding:14px 26px; border-radius:10px; font-weight:600; font-size:16px; }
+.btn.primary { background:var(--accent); color:#0b1220; }
+.btn.primary:hover { background:#5cb8ff; text-decoration:none; }
+.btn.ghost { background:transparent; color:var(--fg); border:1px solid var(--border); }
+.btn.ghost:hover { background:var(--card); text-decoration:none; }
+section { padding:36px 0; border-top:1px solid var(--border); }
+h2 { font-size:26px; margin:0 0 16px; letter-spacing:-.01em; }
+p { color:#dfe5ec; }
+.muted { color:var(--muted); }
+img.screen { width:100%; border-radius:12px; border:1px solid var(--border); box-shadow:var(--shadow); margin:12px 0; }
+.grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+@media (max-width:720px) { .grid { grid-template-columns:1fr; } h1 { font-size:32px; } }
+.problem { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; }
+.problem b { color:#ff9c9c; }
+.steps { list-style:none; padding:0; margin:0; counter-reset:s; }
+.steps li { counter-increment:s; padding:12px 0 12px 44px; position:relative; border-bottom:1px solid var(--border); }
+.steps li:last-child { border-bottom:0; }
+.steps li:before { content:counter(s); position:absolute; left:0; top:12px; width:30px; height:30px; border-radius:50%; background:var(--accent); color:#0b1220; font-weight:700; display:flex; align-items:center; justify-content:center; }
+.faq details { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px 18px; margin-bottom:10px; }
+.faq summary { cursor:pointer; font-weight:600; }
+.faq p { margin:10px 0 4px; }
+footer { padding:32px 0; color:var(--muted); text-align:center; font-size:14px; }
+kbd { background:#22262d; padding:2px 8px; border-radius:6px; font-family:Consolas,monospace; font-size:.9em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>FitFast Downloader</h1>
+  <p class="tag">Free open-source Windows app that downloads <b>FitGirl repacks</b> from <b>fuckingfast.co</b> past the Cloudflare block that broke JDownloader 2.</p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/DEM9N101/FitFast-Downloader/releases/latest">Download installer</a>
+    <a class="btn ghost" href="https://github.com/DEM9N101/FitFast-Downloader">View on GitHub</a>
+  </div>
+  <p class="muted" style="margin-top:16px; font-size:14px;">Windows 10 / 11 &middot; MIT license &middot; No admin, no signup, no ads</p>
+</header>
+
+<section>
+  <div class="problem">
+    <p><b>Blocked by Cloudflare?</b> If you have been trying to download a FitGirl repack from fuckingfast.co and JDownloader 2 keeps saying "Blocked by Cloudflare Site-Pro", "Cloudflare site protection", or the links come up as offline, this is the tool for you. It happens because the host changed how it hands out the real download URL, so plain download managers cannot follow the new flow. FitFast handles the new flow.</p>
+  </div>
+</section>
+
+<section>
+  <h2>What it looks like</h2>
+  <div class="grid">
+    <img class="screen" src="https://raw.githubusercontent.com/DEM9N101/FitFast-Downloader/main/docs/img/main.png" alt="FitFast Downloader main window">
+    <img class="screen" src="https://raw.githubusercontent.com/DEM9N101/FitFast-Downloader/main/docs/img/fetch-success.png" alt="After fetching a FitGirl page, all fuckingfast.co links are listed">
+    <img class="screen" src="https://raw.githubusercontent.com/DEM9N101/FitFast-Downloader/main/docs/img/downloading.png" alt="FitFast downloading all repack parts in parallel with speed shown">
+    <img class="screen" src="https://raw.githubusercontent.com/DEM9N101/FitFast-Downloader/main/docs/img/installer.png" alt="FitFast one-click Windows installer">
+  </div>
+</section>
+
+<section>
+  <h2>How it works</h2>
+  <ol class="steps">
+    <li>Paste the FitGirl game page URL, or paste a list of fuckingfast.co links.</li>
+    <li>FitFast uses a stealth browser to get past the Cloudflare check and reads the real signed download URL for every part.</li>
+    <li>aria2 downloads them all in parallel with 16 connections per file so you saturate your line.</li>
+    <li>UnRAR unpacks the whole archive set into one clean folder named after the game. Done.</li>
+  </ol>
+</section>
+
+<section>
+  <h2>Why it works when JDownloader 2 does not</h2>
+  <p>fuckingfast.co switched to an HTMX-style flow where the real download URL is delivered through a response header (<kbd>hx-redirect</kbd>) after a POST, not a normal HTTP redirect. Vanilla download managers (JDownloader 2, IDM, FDM) only follow the standard redirect chain, so they see nothing. FitFast reads that header the way a real browser would. It also uses <a href="https://github.com/daijro/camoufox" rel="nofollow">Camoufox</a>, a fingerprint-hardened Firefox, so Cloudflare's bot checks pass cleanly.</p>
+</section>
+
+<section>
+  <h2>Features</h2>
+  <div class="grid">
+    <div><b>Paste a FitGirl page</b><p>It scrapes every fuckingfast link from the page and queues them all.</p></div>
+    <div><b>Multi-connection speed</b><p>16 connections per file via aria2, resumable, disk-cached.</p></div>
+    <div><b>Auto re-resolve</b><p>If a file gets stuck on a slow CDN edge, FitFast gets a fresh signed URL and resumes.</p></div>
+    <div><b>Auto extract</b><p>Bundled UnRAR unpacks the whole multi-part rar set when the download finishes.</p></div>
+    <div><b>One folder per game</b><p>Every part lands in a subfolder named after the game so your Downloads folder stays clean.</p></div>
+    <div><b>One-click installer</b><p>No admin, no Python. Click install, click open, done.</p></div>
+  </div>
+</section>
+
+<section class="faq">
+  <h2>FAQ</h2>
+  <details><summary>Is it free? Is it open source?</summary><p>Yes and yes. MIT license. Full source is on <a href="https://github.com/DEM9N101/FitFast-Downloader">GitHub</a>. No ads, no signup, no telemetry.</p></details>
+  <details><summary>Windows only?</summary><p>Yes for now. The Cloudflare bypass depends on a bundled Windows Firefox build. Mac / Linux users can run the Python source directly if they set up Camoufox themselves.</p></details>
+  <details><summary>My download says "Blocked by Cloudflare Site-Pro". Does this fix it?</summary><p>Yes. That message is what JDownloader 2 says when it cannot follow the new URL flow. FitFast follows it.</p></details>
+  <details><summary>Do I need to change my DNS to 1.1.1.1 or use a VPN?</summary><p>No. Those workarounds fix a different, ISP-level block. FitFast solves the site-side block directly.</p></details>
+  <details><summary>Is it safe to run?</summary><p>The code is open, you can read every line. Windows SmartScreen may warn the first time because the installer is not code-signed. Click "More info" then "Run anyway".</p></details>
+  <details><summary>Does it host any pirated files?</summary><p>No. FitFast is only a download client. It downloads whatever links you paste. What you download is your responsibility, and this project is not affiliated with FitGirl or any file host.</p></details>
+</section>
+
+<section>
+  <h2>Download</h2>
+  <p><a class="btn primary" href="https://github.com/DEM9N101/FitFast-Downloader/releases/latest">Latest Windows installer</a> &nbsp; <a class="btn ghost" href="https://github.com/DEM9N101/FitFast-Downloader">Source on GitHub</a></p>
+</section>
+
+<footer>
+  Not affiliated with FitGirl, FitGirl Repacks, fuckingfast.co, or any file host. Use at your own discretion. MIT licensed.
+</footer>
+
+</div>
+</body>
+</html>
