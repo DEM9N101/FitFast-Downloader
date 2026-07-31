@@ -4,7 +4,7 @@
 ; browser is downloaded automatically the first time the app runs.
 
 #define MyAppName "FitFast Downloader"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "FitFast"
 #define MyAppExeName "FitFast.exe"
 #define MyAppURL "https://github.com/DEM9N101/FitFast-Downloader"

@@ -91,6 +91,21 @@ def unique_folder(base_dir: str | Path, name: str) -> Path:
 _AD_KEYWORDS = ("c8yq5.sbs", "doubleclick.net", "googlesyndication",
                 "googletagmanager", ".sbs/?tag=", "adservice", "adnxs")
 
+# All we need from the page is a response header, so heavy visual assets are
+# dead weight. Blocking these cuts each browser's memory a lot (the main cause
+# of the out-of-memory crash) and speeds up resolving, since the page stops
+# pulling megabytes of ad imagery.
+#
+# Stylesheets are deliberately NOT blocked: Playwright refuses to click an
+# element it considers invisible, and the download button's visibility can
+# depend on CSS. Images/media/fonts are the bulk of the memory anyway.
+_BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font"})
+
+# Restart a browser after this many resolves. Firefox creeps upward in memory
+# over a long batch; a periodic clean restart costs a second and keeps a
+# 130-file run flat instead of ballooning.
+RECYCLE_AFTER = 25
+
 
 class Resolver:
     """Single persistent Camoufox browser reused across all resolves."""
@@ -100,10 +115,15 @@ class Resolver:
         self._browser = None
         self._lock = threading.Lock()
         self._closed = False
+        self._resolves_since_start = 0
 
     def _ensure_browser(self) -> None:
+        # Periodic clean restart keeps memory flat over a long batch.
+        if self._browser is not None and self._resolves_since_start >= RECYCLE_AFTER:
+            self._hard_reset()
         if self._browser is not None:
             return
+        self._resolves_since_start = 0
         # humanize=False: fuckingfast.co uses Cloudflare's passive JS challenge,
         # not behavioural analysis, so mouse-movement simulation just slows us
         # down and can push click actions past their timeout on repeat visits.
@@ -148,14 +168,26 @@ class Resolver:
     def _resolve_once(self, url: str) -> tuple[str, str]:
         self._ensure_browser()
         assert self._browser is not None
+        self._resolves_since_start += 1
         page = self._browser.new_page()
 
         def _route(route):
-            u = route.request.url
-            if any(k in u for k in _AD_KEYWORDS):
-                route.abort()
-            else:
+            try:
+                req = route.request
+                if req.resource_type in _BLOCKED_RESOURCE_TYPES:
+                    route.abort()
+                    return
+                if any(k in req.url for k in _AD_KEYWORDS):
+                    route.abort()
+                    return
                 route.continue_()
+            except Exception:
+                # A route can die if the page navigates mid-flight; never let
+                # that kill the resolve.
+                try:
+                    route.continue_()
+                except Exception:
+                    pass
 
         page.route("**/*", _route)
 

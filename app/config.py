@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 GITHUB_REPO = "DEM9N101/FitFast-Downloader"
 REPO_URL = f"https://github.com/{GITHUB_REPO}"
 ISSUES_URL = f"{REPO_URL}/issues/new"
@@ -17,8 +17,21 @@ LOG_FILE = LOG_DIR / "fitfast.log"
 
 DEFAULTS: dict = {
     "destination": str(Path.home() / "Downloads"),
-    "connections_per_file": 16,
-    "concurrent_files": 3,
+    # 1 connection per file is REQUIRED for fuckingfast.co: it returns a
+    # malformed Content-Range for bounded range requests, so every extra split
+    # piece dies with "Invalid range header". Speed comes from running many
+    # files at once instead. See app/downloader.py for the full explanation.
+    "connections_per_file": 1,
+    # Each file is a single stream now, so this is the main speed dial. 4 is a
+    # safe default: enough streams to fill a fast line, few enough that the
+    # host does not start throttling the IP. Users on slower lines often find
+    # 2 is just as fast.
+    "concurrent_files": 4,
+    # How many stealth browsers resolve links at once. Big throughput lever
+    # (one browser starves the downloader), but each is a real Firefox costing
+    # hundreds of MB, so 2 is the safe default and the actual count is capped
+    # at runtime by free RAM. See app/sysinfo.py.
+    "resolver_workers": 2,
     "window_geometry": "980x720",
     "appearance": "dark",
     "auto_reresolve": True,

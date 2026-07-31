@@ -1,10 +1,21 @@
 """aria2c daemon wrapper using JSON-RPC.
 
-Speed-tuned defaults (see design doc for reasoning):
-  - 16 parallel TCP connections per file
-  - up to 3 files downloading at once (48 sockets total)
-  - falloc for instant NTFS pre-allocation, prevents fragmentation
-  - 64 MB disk cache to batch writes
+Tuning notes, learned the hard way against fuckingfast.co:
+
+  - ONE connection per file by default. The host answers a bounded range
+    request (`Range: bytes=X-Y`) with a Content-Range that claims it will
+    stream to the end of the file, even though it then sends exactly the
+    requested length. The body is fine, the header is a lie, and aria2
+    rejects the mismatch with errorCode=8 ("Invalid range header"). The net
+    effect is that every split piece except the first one dies, so a
+    multi-connection download is *slower* and eventually fails outright.
+    Open-ended ranges (`bytes=X-`) are answered correctly, which is why
+    resuming a partial file still works.
+  - Throughput therefore comes from downloading MANY FILES at once rather
+    than splitting each file into chunks.
+  - No --lowest-speed-limit: it converts a temporary slowdown into a hard
+    failure.
+  - falloc for instant NTFS pre-allocation, 64 MB disk cache to batch writes.
 """
 from __future__ import annotations
 import io
@@ -78,9 +89,13 @@ def ensure_aria2c() -> Path:
 
 
 class Downloader:
-    def __init__(self, connections_per_file: int = 16, concurrent_files: int = 3) -> None:
+    def __init__(self, connections_per_file: int = 1, concurrent_files: int = 8,
+                 log_path: "str | Path | None" = None) -> None:
         self.connections_per_file = max(1, min(32, connections_per_file))
-        self.concurrent_files = max(1, min(6, concurrent_files))
+        # Since each file is a single stream, parallelism across files is the
+        # only throughput lever, so allow a lot of them.
+        self.concurrent_files = max(1, min(24, concurrent_files))
+        self.log_path = log_path
         self.proc: subprocess.Popen | None = None
         self.port: int | None = None
         self.secret = "fgdl-" + os.urandom(8).hex()
@@ -99,7 +114,9 @@ class Downloader:
             "--rpc-allow-origin-all=false",
             f"--max-connection-per-server={self.connections_per_file}",
             f"--split={self.connections_per_file}",
-            "--min-split-size=1M",
+            # Only relevant when splitting is enabled at all (see the class
+            # docstring): tiny pieces are pure connection-setup overhead.
+            "--min-split-size=4M",
             f"--max-concurrent-downloads={self.concurrent_files}",
             "--file-allocation=falloc",
             "--disk-cache=64M",
@@ -107,6 +124,9 @@ class Downloader:
             "--auto-file-renaming=false",
             "--allow-overwrite=false",
             "--check-certificate=true",
+            # NOTE: deliberately no --lowest-speed-limit. It aborts downloads
+            # that dip below the threshold, which turns a temporary CDN slowdown
+            # into a hard failure. Slow-but-alive is always better than dead.
             "--console-log-level=warn",
             "--summary-interval=0",
             "--no-conf=true",
@@ -117,6 +137,8 @@ class Downloader:
             "--connect-timeout=15",
             "--timeout=60",
         ]
+        if self.log_path is not None:
+            args += [f"--log={self.log_path}", "--log-level=notice"]
         creation = 0
         if os.name == "nt":
             creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)

@@ -11,6 +11,12 @@
 
 ---
 
+> **Update 1.2.0 is a big speed and reliability fix.** If your downloads were
+> crawling, failing part way, or showing an "invalid range header" error, this
+> version fixes the cause. Real repack parts went from 1 to 2 MB/s up to
+> 32 MB/s with no errors. Failed files now retry themselves, and FitFast can no
+> longer run your PC out of memory. See the [changelog](CHANGELOG.md).
+
 ## What is this?
 
 FitGirl repacks come as a big stack of `.rar` files (part 1, part 2, part 3, and so on) on a host called **fuckingfast.co**. That host blocks normal download managers like JDownloader with a Cloudflare wall, and it makes you click every single link by hand.

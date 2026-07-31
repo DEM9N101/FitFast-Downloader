@@ -261,24 +261,41 @@ class MainWindow:
         _conns_label = ctk.CTkLabel(speed, text="Connections/file  ⓘ")
         _conns_label.grid(row=0, column=0, padx=(8, 4), pady=6)
         Tooltip(_conns_label,
-                "How many pieces each file is split into and grabbed at the same time. More can be "
-                "faster. 16 is a safe choice for almost everyone; try 24 or 32 only on a very fast line.")
+                "How many pieces each file is split into. Leave this at 1. fuckingfast.co sends a "
+                "broken reply when a file is requested in pieces, which makes downloads fail with "
+                "a range error. Speed comes from the setting next to this one instead. Only raise "
+                "it if you are downloading from some other site that supports it.")
         self.conns_option = ctk.CTkOptionMenu(
-            speed, values=["4", "8", "16", "24", "32"], width=80,
+            speed, values=["1", "2", "4", "8", "16"], width=80,
         )
-        self.conns_option.set(str(self._config.get("connections_per_file", 16)))
+        self.conns_option.set(str(self._config.get("connections_per_file", 1)))
         self.conns_option.grid(row=0, column=1, padx=(0, 24), pady=6)
 
         _conc_label = ctk.CTkLabel(speed, text="Concurrent files  ⓘ")
         _conc_label.grid(row=0, column=2, padx=(0, 4), pady=6)
         Tooltip(_conc_label,
-                "How many files download at the same time. If your internet feels maxed out or "
-                "unstable, lower this. Most people are fine with 3.")
+                "How many files download at the same time. This is your main speed control. Each "
+                "file uses one connection, so more files means more of your line gets used, up to "
+                "a point. 4 is a good starting point. Worth trying 2 and 8 once each and keeping "
+                "whichever feels fastest: past a certain number the host starts slowing you down.")
         self.concurrent_option = ctk.CTkOptionMenu(
-            speed, values=["1", "2", "3", "4", "5", "6"], width=80,
+            speed, values=["2", "4", "6", "8", "12", "16"], width=80,
         )
-        self.concurrent_option.set(str(self._config.get("concurrent_files", 3)))
-        self.concurrent_option.grid(row=0, column=3, padx=(0, 8), pady=6)
+        self.concurrent_option.set(str(self._config.get("concurrent_files", 4)))
+        self.concurrent_option.grid(row=0, column=3, padx=(0, 24), pady=6)
+
+        _res_label = ctk.CTkLabel(speed, text="Resolvers  ⓘ")
+        _res_label.grid(row=0, column=4, padx=(0, 4), pady=6)
+        Tooltip(_res_label,
+                "How many links FitFast prepares at the same time. Each one runs a hidden browser, "
+                "so more means downloads spend less time waiting, but each also uses about a "
+                "gigabyte of memory. 2 is the safe default. FitFast automatically lowers this if "
+                "your PC is short on memory, so it can never freeze your machine.")
+        self.resolvers_option = ctk.CTkOptionMenu(
+            speed, values=["1", "2", "3", "4"], width=80,
+        )
+        self.resolvers_option.set(str(self._config.get("resolver_workers", 2)))
+        self.resolvers_option.grid(row=0, column=5, padx=(0, 8), pady=6)
 
         self.auto_reresolve_var = tk.BooleanVar(value=bool(self._config.get("auto_reresolve", True)))
         self.auto_reresolve_check = ctk.CTkCheckBox(
@@ -419,13 +436,19 @@ class MainWindow:
         try:
             return int(self.conns_option.get())
         except ValueError:
-            return 16
+            return 1
 
     def get_concurrent(self) -> int:
         try:
             return int(self.concurrent_option.get())
         except ValueError:
-            return 3
+            return 8
+
+    def get_resolver_workers(self) -> int:
+        try:
+            return int(self.resolvers_option.get())
+        except (ValueError, AttributeError):
+            return 2
 
     def get_auto_reresolve(self) -> bool:
         return bool(self.auto_reresolve_var.get())

@@ -21,6 +21,7 @@ if __package__ in (None, ""):
     from app.scraper import scrape_fitgirl_page, game_title_from_links, ScrapeError, is_fitgirl_url
     from app.extractor import extract_all, find_unrar
     from app.log import setup_logging, get_logger, log_exception
+    from app.sysinfo import safe_resolver_workers
     from app.ui import MainWindow, format_bytes, format_speed, format_eta
 else:
     from . import config as config_mod
@@ -32,13 +33,14 @@ else:
     from .scraper import scrape_fitgirl_page, game_title_from_links, ScrapeError, is_fitgirl_url
     from .extractor import extract_all, find_unrar
     from .log import setup_logging, get_logger, log_exception
+    from .sysinfo import safe_resolver_workers
     from .ui import MainWindow, format_bytes, format_speed, format_eta
 
 
 class Job:
     __slots__ = ("url", "guess_name", "state", "filename", "signed_url", "gid",
                  "error", "total", "completed", "speed", "reresolve_count",
-                 "download_started_at")
+                 "download_started_at", "permit_held", "retry_count")
 
     def __init__(self, url: str, guess_name: str):
         self.url = url
@@ -52,7 +54,12 @@ class Job:
         self.completed: int = 0
         self.speed: int = 0
         self.reresolve_count: int = 0
+        self.retry_count: int = 0
         self.download_started_at: float = 0.0
+        # True while this job holds an in-flight permit (from first fresh
+        # resolve until it reaches a terminal done/error). Keeps a bounded
+        # number of freshly-signed URLs alive so they don't expire unused.
+        self.permit_held: bool = False
 
 
 class StallMonitor:
@@ -66,7 +73,7 @@ class StallMonitor:
       - Per-job cap of 3 total re-resolves
     """
     WINDOW_S = 45.0
-    MIN_ACTIVE_S = 30.0
+    MIN_ACTIVE_S = 40.0
     RELATIVE_FLOOR = 0.30
     MAX_RERESOLVES = 3
 
@@ -99,23 +106,31 @@ class StallMonitor:
         return (newest_b - oldest_b) / elapsed if elapsed > 0 else None
 
     def stalled_gid(self, active_gids: list[str], reresolve_counts: dict[str, int]) -> tuple[str, float] | None:
-        """Return (gid, its_avg_speed_bps) for the worst active file if it's stalled."""
+        """Return (gid, its_avg_speed_bps) for the worst active file if it's stalled.
+
+        Deliberately conservative. A file is only worth swapping when there's
+        proof the pipe can do better right now: at least two files are active,
+        at least one of them is genuinely fast, and the slow one is far below
+        both the absolute floor and that fast peer. If EVERY file is slow, the
+        bottleneck is the pipe or the whole CDN, and re-resolving just burns a
+        browser for nothing, so we do nothing.
+        """
         speeds: dict[str, float] = {}
         for g in active_gids:
             v = self._avg_speed(g)
             if v is not None:
                 speeds[g] = v
-        if not speeds:
+        if len(speeds) < 2:
             return None
         peak = max(speeds.values())
+        # Need a clearly-healthy peer as evidence the line isn't just maxed out.
+        if peak < self.absolute_floor_bps * 2:
+            return None
         candidates: list[tuple[str, float]] = []
         for g, v in speeds.items():
             if reresolve_counts.get(g, 0) >= self.MAX_RERESOLVES:
                 continue
             if v < self.absolute_floor_bps and v < peak * self.RELATIVE_FLOOR:
-                candidates.append((g, v))
-            elif len(speeds) == 1 and v < self.absolute_floor_bps * 0.5:
-                # Only file, and it's really slow (< half the floor)
                 candidates.append((g, v))
         if not candidates:
             return None
@@ -125,6 +140,10 @@ class StallMonitor:
 
 class App:
     POLL_INTERVAL_MS = 500
+    # How many times a failed download is given a fresh link before we call it
+    # dead. Signed URLs expire and CDN edges drop, so most failures are
+    # temporary and worth another go.
+    MAX_DOWNLOAD_RETRIES = 3
 
     def __init__(self) -> None:
         self.config = config_mod.load()
@@ -142,12 +161,17 @@ class App:
         self.paused = False
         self.running = False
 
-        self.resolver: Resolver | None = None
+        self.resolvers: list[Resolver] = []
         self.downloader: Downloader | None = None
         self.resolve_queue: "queue.Queue[Job]" = queue.Queue()
         self.reresolve_queue: "queue.Queue[Job]" = queue.Queue()
-        self.resolver_thread: threading.Thread | None = None
+        self.resolver_threads: list[threading.Thread] = []
         self.shutdown_event = threading.Event()
+        # Bounds how many freshly-signed URLs may be alive at once, so aria2
+        # stays fed but signed links get used before they expire. Sized in
+        # _on_start as concurrent_files + resolver_workers.
+        self.inflight_sem: threading.Semaphore | None = None
+        self._last_reresolve_at: float = 0.0
 
         self.stall_monitor = StallMonitor(
             absolute_floor_bps=float(self.config.get("stall_threshold_mbps", 1.0)) * 1_048_576.0,
@@ -315,6 +339,7 @@ class App:
         self.config["destination"] = str(dest_root_path)
         self.config["connections_per_file"] = self.window.get_connections()
         self.config["concurrent_files"] = self.window.get_concurrent()
+        self.config["resolver_workers"] = self.window.get_resolver_workers()
         self.config["auto_reresolve"] = self.window.get_auto_reresolve()
         self.config["auto_extract"] = self.window.get_auto_extract()
         self.config["delete_archives_after"] = self.window.get_delete_after()
@@ -333,9 +358,16 @@ class App:
 
         # Boot downloader + resolver
         try:
+            aria2_log = None
+            try:
+                config_mod.LOG_DIR.mkdir(parents=True, exist_ok=True)
+                aria2_log = config_mod.LOG_DIR / "aria2.log"
+            except Exception:
+                aria2_log = None
             self.downloader = Downloader(
                 connections_per_file=self.window.get_connections(),
                 concurrent_files=self.window.get_concurrent(),
+                log_path=aria2_log,
             )
             self.downloader.start()
         except (Aria2NotFound, Aria2RpcError) as e:
@@ -351,27 +383,50 @@ class App:
             return
         get_logger().info("Starting %d download(s) into %s", len(self.jobs), self.dest_folder)
 
-        self.resolver = Resolver()
         self.shutdown_event.clear()
         # Reset per-session tuning state
         self.stall_monitor = StallMonitor(
             absolute_floor_bps=float(self.config.get("stall_threshold_mbps", 1.0)) * 1_048_576.0,
         )
         self.reresolve_counts.clear()
+        self._last_reresolve_at = 0.0
         # Drain any leftover items from a previous session
-        while True:
-            try:
-                self.reresolve_queue.get_nowait()
-            except queue.Empty:
-                break
+        for q in (self.resolve_queue, self.reresolve_queue):
+            while True:
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
         with self.jobs_lock:
             for job in self.jobs:
+                job.permit_held = False
                 self.resolve_queue.put(job)
 
-        self.resolver_thread = threading.Thread(
-            target=self._resolver_loop, name="resolver", daemon=True
+        # Parallel resolver pool. More browsers => links get resolved fast
+        # enough to keep the downloader saturated instead of starving it.
+        # Each browser is a real Firefox, so the count is capped by free RAM:
+        # a too-eager pool is what takes the whole machine down.
+        n_workers, ram_note = safe_resolver_workers(
+            self.window.get_resolver_workers(), len(self.jobs)
         )
-        self.resolver_thread.start()
+        if ram_note:
+            get_logger().warning("Resolver pool reduced: %s", ram_note)
+            self.window.show_toast(ram_note, "info", 7000)
+        concurrent = self.window.get_concurrent()
+        # Allow a little prefetch beyond the active download slots so a worker
+        # always has somewhere to put a freshly-resolved URL.
+        self.inflight_sem = threading.BoundedSemaphore(concurrent + n_workers)
+        self.resolvers = []
+        self.resolver_threads = []
+        for i in range(n_workers):
+            r = Resolver()
+            self.resolvers.append(r)
+            t = threading.Thread(
+                target=self._resolver_loop, args=(r,),
+                name=f"resolver-{i+1}", daemon=True,
+            )
+            t.start()
+            self.resolver_threads.append(t)
 
         self.running = True
         self.paused = False
@@ -385,49 +440,77 @@ class App:
                 + f" (skipped {skipped} invalid line(s))"
             )
 
-    def _resolver_loop(self) -> None:
+    def _resolver_loop(self, resolver: "Resolver") -> None:
+        """One worker: owns a single browser. Re-resolves (which already hold an
+        in-flight permit) always take priority; fresh jobs are only picked up
+        once a permit is free, which paces resolving to just ahead of the
+        downloads and keeps signed URLs from expiring unused.
+        """
         while not self.shutdown_event.is_set():
-            # Re-resolves have priority over fresh queue items.
-            is_reresolve = False
-            job: Job | None = None
+            # 1) Re-resolves first. They already hold a permit, so no gating.
             try:
                 job = self.reresolve_queue.get_nowait()
-                is_reresolve = True
+                self._handle_resolve(resolver, job, is_reresolve=True)
+                continue
             except queue.Empty:
-                try:
-                    job = self.resolve_queue.get(timeout=0.5)
-                except queue.Empty:
-                    continue
-            if self.shutdown_event.is_set() or job is None:
+                pass
+
+            # 2) Fresh job, but only if we can reserve an in-flight slot.
+            sem = self.inflight_sem
+            if sem is None:
                 return
-
-            status_text = "Re-resolving (was slow)..." if is_reresolve else "Resolving..."
-            self._set_state(job, "resolving", status_text)
-
+            if not sem.acquire(timeout=0.3):
+                continue  # pipeline full; loop back and re-check re-resolves
             try:
-                signed_url, filename = self.resolver.resolve(job.url)
-            except (ResolveError, Exception) as e:
-                self._set_state(job, "error", f"Error: {e}", error=str(e))
+                job = self.resolve_queue.get(timeout=0.3)
+            except queue.Empty:
+                sem.release()  # nothing to do; hand the slot back
                 continue
+            job.permit_held = True
+            self._handle_resolve(resolver, job, is_reresolve=False)
 
-            job.signed_url = signed_url
-            # On re-resolve, preserve the existing filename so aria2 finds the
-            # .aria2 control file and resumes; on fresh resolve, adopt the new one.
-            if is_reresolve:
-                target_filename = job.filename
-            else:
-                job.filename = filename
-                target_filename = filename
-                self._schedule_ui(lambda j=job: self._rename_row(j))
+    def _handle_resolve(self, resolver: "Resolver", job: "Job", is_reresolve: bool) -> None:
+        if self.shutdown_event.is_set() or job is None:
+            return
+        status_text = "Re-resolving (was slow)..." if is_reresolve else "Resolving..."
+        self._set_state(job, "resolving", status_text)
 
-            try:
-                gid = self.downloader.add(signed_url, str(self.dest_folder), target_filename)
-            except Exception as e:
-                self._set_state(job, "error", f"aria2 add failed: {e}", error=str(e))
-                continue
-            job.gid = gid
-            job.download_started_at = time.time()
-            self._set_state(job, "downloading", "Resuming..." if is_reresolve else "Starting...")
+        try:
+            signed_url, filename = resolver.resolve(job.url)
+        except (ResolveError, Exception) as e:
+            self._set_state(job, "error", f"Error: {e}", error=str(e))
+            self._release_permit(job)
+            return
+
+        job.signed_url = signed_url
+        # On re-resolve, preserve the existing filename so aria2 finds the
+        # .aria2 control file and resumes; on fresh resolve, adopt the new one.
+        if is_reresolve:
+            target_filename = job.filename
+        else:
+            job.filename = filename
+            target_filename = filename
+            self._schedule_ui(lambda j=job: self._rename_row(j))
+
+        try:
+            gid = self.downloader.add(signed_url, str(self.dest_folder), target_filename)
+        except Exception as e:
+            self._set_state(job, "error", f"aria2 add failed: {e}", error=str(e))
+            self._release_permit(job)
+            return
+        job.gid = gid
+        job.download_started_at = time.time()
+        self._set_state(job, "downloading", "Resuming..." if is_reresolve else "Starting...")
+
+    def _release_permit(self, job: "Job") -> None:
+        """Release a job's in-flight permit exactly once."""
+        if job.permit_held:
+            job.permit_held = False
+            if self.inflight_sem is not None:
+                try:
+                    self.inflight_sem.release()
+                except Exception:
+                    pass
 
     def _rename_row(self, job: Job) -> None:
         row = self.window.rows.get(str(id(job)))
@@ -475,10 +558,11 @@ class App:
             return
 
         total_completed = 0
-        total_size = 0
+        done_bytes = 0
         agg_speed = 0
         done_count = 0
         error_count = 0
+        resolved_count = 0
         active_gids: list[str] = []
 
         with self.jobs_lock:
@@ -486,16 +570,19 @@ class App:
 
         for job in jobs:
             if job.state in ("done", "error"):
+                self._release_permit(job)
                 if job.state == "done":
                     done_count += 1
+                    resolved_count += 1
+                    done_bytes += job.total
                     total_completed += job.total
-                    total_size += job.total
                 elif job.state == "error":
                     error_count += 1
                 continue
 
             if job.gid is None:
                 continue
+            resolved_count += 1
 
             try:
                 st = self.downloader.status(job.gid)
@@ -508,7 +595,6 @@ class App:
             status = st.get("status", "")
             err_msg = st.get("errorMessage") or ""
 
-            total_size += job.total
             total_completed += job.completed
             agg_speed += job.speed
 
@@ -541,13 +627,39 @@ class App:
                     job.state = "done"
                     if job.gid:
                         self.stall_monitor.forget(job.gid)
+                    self._release_permit(job)
                 elif status == "error":
-                    row.set_status("Error", "#ff6b6b")
-                    row.set_stats(err_msg or "aria2 reported error")
-                    job.state = "error"
-                    job.error = err_msg
                     if job.gid:
                         self.stall_monitor.forget(job.gid)
+                    # A failed download is usually recoverable: signed URLs go
+                    # stale and CDN edges drop out. Get a fresh link and resume
+                    # from the partial rather than writing the file off.
+                    if job.retry_count < self.MAX_DOWNLOAD_RETRIES:
+                        job.retry_count += 1
+                        row.set_status(
+                            f"Retrying ({job.retry_count}/{self.MAX_DOWNLOAD_RETRIES})...",
+                            "#ffa726",
+                        )
+                        row.set_stats(err_msg or "download failed, getting a fresh link")
+                        get_logger().warning(
+                            "Download failed (%s), retry %d/%d: %s",
+                            err_msg or "unknown", job.retry_count,
+                            self.MAX_DOWNLOAD_RETRIES, job.filename,
+                        )
+                        try:
+                            self.downloader.remove(job.gid)
+                        except Exception:
+                            pass
+                        job.gid = None
+                        job.signed_url = None
+                        job.state = "resolving"
+                        self.reresolve_queue.put(job)
+                    else:
+                        row.set_status("Error", "#ff6b6b")
+                        row.set_stats(err_msg or "aria2 reported error")
+                        job.state = "error"
+                        job.error = err_msg
+                        self._release_permit(job)
                 elif status == "paused":
                     row.set_status("Paused", "#bdbdbd")
                 elif status == "waiting":
@@ -558,27 +670,41 @@ class App:
             self._peak_agg_speed = agg_speed
             self.config["peak_speed_bps"] = agg_speed
 
-        # Auto re-resolve: kill the slowest badly-underperforming file and
-        # get it a fresh signed URL. aria2's .aria2 control file lets it resume.
-        if self.window.get_auto_reresolve() and active_gids:
+        # Auto re-resolve: swap the slowest badly-underperforming file for a
+        # fresh signed URL. aria2's .aria2 control file lets it resume. Gated by
+        # a cooldown so we never swap more than one file every 15 s (avoids the
+        # thrash where a starved batch murders its own downloads).
+        if (self.window.get_auto_reresolve() and active_gids
+                and time.time() - self._last_reresolve_at > 15.0):
             stalled = self.stall_monitor.stalled_gid(active_gids, self.reresolve_counts)
             if stalled is not None:
                 stalled_gid, avg_bps = stalled
                 target_job = next((j for j in jobs if j.gid == stalled_gid), None)
                 if target_job is not None:
                     self._trigger_reresolve(target_job, avg_bps)
+                    self._last_reresolve_at = time.time()
 
         active = len(jobs) - done_count - error_count
+        # Honest totals: total_completed is real downloaded bytes. We can't know
+        # the size of files not yet resolved, so we show files done/total and
+        # bytes downloaded rather than a fake "of X GB" that only counted the
+        # handful resolved so far. ETA is estimated from the average size of the
+        # files that HAVE finished, once we have at least one.
         status_line = (
-            f"{done_count}/{len(jobs)} done"
+            f"{done_count}/{len(jobs)} files done"
             + (f", {error_count} failed" if error_count else "")
-            + f"  •  {format_bytes(total_completed)} of {format_bytes(total_size)}"
+            + f"  •  resolved {resolved_count}/{len(jobs)}"
+            + f"  •  {format_bytes(total_completed)} downloaded"
             + f"  •  {format_speed(agg_speed)} now"
             + f"  •  peak {format_speed(self._peak_agg_speed)}"
         )
-        if agg_speed > 0 and total_size > total_completed:
-            eta = (total_size - total_completed) / agg_speed
-            status_line += f"  •  ETA {format_eta(eta)}"
+        if done_count > 0 and agg_speed > 0:
+            avg_size = done_bytes / done_count
+            remaining_files = max(0, len(jobs) - done_count - error_count)
+            active_partial = total_completed - done_bytes
+            remaining_bytes = max(0.0, avg_size * remaining_files - active_partial)
+            if remaining_bytes > 0:
+                status_line += f"  •  ETA {format_eta(remaining_bytes / agg_speed)}"
         self.window.set_status_bar(status_line)
 
         if active == 0 and self.running:
@@ -621,9 +747,12 @@ class App:
         # Cleanup workers
         try:
             self.shutdown_event.set()
-            if self.resolver is not None:
-                threading.Thread(target=self.resolver.close, daemon=True).start()
-                self.resolver = None
+            if self.resolvers:
+                resolvers = self.resolvers
+                self.resolvers = []
+                for r in resolvers:
+                    threading.Thread(target=r.close, daemon=True).start()
+            self.resolver_threads = []
             if self.downloader is not None:
                 threading.Thread(target=self.downloader.stop, daemon=True).start()
                 self.downloader = None
@@ -893,8 +1022,12 @@ class App:
         except Exception:
             pass
         try:
-            if self.resolver is not None:
-                self.resolver.close()
+            for r in self.resolvers:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+            self.resolvers = []
         except Exception:
             pass
 
